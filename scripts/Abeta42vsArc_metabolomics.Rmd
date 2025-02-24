@@ -1,0 +1,71 @@
+---
+title: "Metabolomic comparison of Abeta42 vs Abeta42Arc"
+author: "Yizhou Yu"
+date: "updated: <i>`r format( Sys.Date(), '%b-%d-%Y')`</i></h4>"
+output:
+  html_document:
+    df_print: paged
+    keep_md: yes
+---
+
+# Data processing and curation
+
+```{r}
+library(readxl)
+library(ggplot2)
+```
+
+## Load data
+
+```{r}
+dt=read.csv("dt/metabolon_dt_FC.csv")
+```
+
+```{r}
+dt$FC = ifelse(
+  dt$FC_Abeta42 >0.3 | 
+                   dt$FC_Abeta42 < 0.8 |
+                   dt$FC_Abeta42 > 1.2 |
+                 dt$FC_Abeta42Arc > 1.2 |
+                 dt$FC_Abeta42Arc < 0.8,
+  TRUE,FALSE
+)
+dt$overall_P = ifelse(
+                  dt$AbArc_p < 0.05 &
+                 dt$Ab42_p < 0.05,
+  TRUE,FALSE
+)
+
+dt$color = ifelse(
+                  dt$FC == TRUE & 
+                 dt$overall_P == TRUE,
+  TRUE,FALSE
+)
+```
+
+## Plot
+
+```{r}
+ggplot(dt, aes(x=log2(FC_Abeta42), y=log2(FC_Abeta42Arc))) + 
+  geom_hline(yintercept = c(-0.3,0.3),linetype="dashed") + 
+  geom_vline(xintercept = c(-0.3,0.3),linetype="dashed") + 
+  geom_point(aes(colour = color),
+             size=2.5) + 
+  scale_colour_manual(name = '', values = setNames(c('#ED2024','#939598'),c(T, F)))+
+  geom_smooth(method = "lm")+
+  theme_classic() +theme(axis.text.x=element_text(colour="black"),
+          axis.text.y=element_text(colour="black"))
+ggsave("fig/metabol_comparison.pdf", width = 10, height = 4)
+```
+
+```{r}
+nrow(dt)
+
+nrow(subset(dt, logFC_Abeta42 >0.3 | 
+                   logFC_Abeta42 < -0.3 |
+                 logFC_Abeta42Arc > 0.3 |
+                 logFC_Abeta42Arc < -0.3))
+
+```
+
+

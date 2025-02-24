@@ -1,0 +1,196 @@
+---
+title: "Analysis of Abeta-expressing Drosophila in LD"
+author: "Yizhou Yu"
+date: "updated: <i>`r format( Sys.Date(), '%b-%d-%Y')`</i></h4>"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Load libraries
+```{r}
+library("behavr")
+library("damr")
+library("ggetho")
+library(sleepr)
+library(survival)
+library(survminer)
+```
+
+Load data into a behavr structure, simultaneously applying the sleep_dam_annotation function
+
+```{r}
+DATA_DIR <- "dt/"
+list.files(DATA_DIR, pattern= "*.txt")
+metadata <- fread("metadt.csv")
+metadata = na.omit(metadata)
+
+# This part accounts for time-zone differences
+#start_datetime = as.POSIXlt(metadata$start_datetime, tz = "",
+#           tryFormats = c("%Y-%m-%d %H:%M:%OS",
+#                          "%Y/%m/%d %H:%M:%OS", 
+#                          "%D/%M/%d %H:%M"))
+
+#subset for metformin concentrations 
+#metadata = subset(metadata, food == "met_0mM" | food == "met_0.1mM")
+
+#metadata$start_datetime = start_datetime
+
+#format of the datetime
+#metadata$start_datetime = c("2021-10-14 08:00:00")
+#metadata$stop_datetime = "2021-11-14 08:00:00"
+
+#Check date format: "2020-07-07 08:00:00"
+metadata$condition = paste0(metadata$phenotype, metadata$food)
+metadata <- link_dam_metadata(metadata, result_dir = DATA_DIR)
+dt <- load_dam(metadata, FUN = sleepr::sleep_dam_annotation)
+
+#curate dead flies -- this is a big function
+#default = 1 day inactivity --> dead 
+
+dt_curated <- curate_dead_animals(dt)
+summary(dt_curated)
+```
+
+
+## Lifespan
+```{r}
+# we make a summary table of all lifespan for each animals
+lifespan_dt <- dt_curated[, .(lifespan = max(t)), by=id]
+lifespan_dt_merged = merge(metadata, lifespan_dt, by = "id")
+lifespan_dt_km = lifespan_dt_merged
+lifespan_dt_km$total_assay_time = as.numeric(as.POSIXct(lifespan_dt_km$stop_datetime,format='%Y-%m-%d %H:%M:%S') - as.POSIXct(lifespan_dt_km$start_datetime,format='%Y-%m-%d %H:%M:%S'))
+lifespan_dt_km$death = NA
+
+for (row in 1:nrow(lifespan_dt_km)){
+  if ((lifespan_dt_km$lifespan[row])/86400 >= lifespan_dt_km$total_assay_time[row]) {
+    lifespan_dt_km$death[row] = 0
+  }
+  else {
+    lifespan_dt_km$death[row] = 1
+  }
+}
+
+km_fit = survfit(Surv(lifespan/86400, death) ~ condition, data = lifespan_dt_km)
+
+ggsurv = ggsurvplot(
+    fit = km_fit, 
+    xlab = "Days (from 10dae)", 
+    ylab = "Survival (%)",
+    conf.int = F,
+    pval = T,
+    #pval.method = TRUE,
+    log.rank.weights = "1")
+ggsurv$plot + scale_y_continuous(labels = scales::percent)
+
+ggsave("fig/KM_lifespan_graph_all_conditions.pdf", width = 5, height = 3)
+```
+
+```{r}
+lifespan_dt_km_abeta = subset(lifespan_dt_km, phenotype == "elav>Abeta42Arc")
+km_fit_abeta = survfit(Surv(lifespan/86400, death) ~ condition, data = lifespan_dt_km_abeta)
+
+ggsurv = ggsurvplot(
+    fit = km_fit_abeta, 
+    xlab = "Days (from 10dae)", 
+    ylab = "Survival (%)",
+    conf.int = F,
+    pval = T,
+    #pval.method = TRUE,
+    log.rank.weights = "1")
+ggsurv$plot + scale_y_continuous(labels = scales::percent)
+
+ggsave("fig/KM_lifespan_graph_abeta_all_concentrations.pdf", width = 5, height = 3)
+```
+
+```{r}
+pairwise_survdiff_results = pairwise_survdiff(Surv(lifespan/86400, death) ~ condition, data = lifespan_dt_km_abeta, p.adjust.method = "none")
+
+pairwise_survdiff_results
+
+symnum(pairwise_survdiff_results$p.value, cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 0.1, 1),
+   symbols = c("****", "***", "**", "*", "+", " "),
+   abbr.colnames = FALSE, na = "")
+```
+
+
+## Sleep
+
+-> use only data from the first 5 days
+```{r}
+dt_curated_first5d = subset(dt_curated, t < 86400*5) # 86400 seconds in a day
+dt_curated_first5d[, phase := ifelse(t %% hours(24) < hours(12), "L", "D")]
+
+summary_dt <- 
+  rejoin(dt_curated_first5d[,
+           .(
+             # this is where the computation happens
+             sleep_fraction_all = mean(asleep),
+             sleep_fraction_l = mean(asleep[phase == "L"]),
+             sleep_fraction_d = mean(asleep[phase == "D"])
+             ),
+           ,by=id])
+summary_dt_cur = merge(summary_dt, lifespan_dt, by = "id")
+summary_dt_cur = subset(summary_dt_cur, lifespan > 4 * 86400)
+
+summary_dt_melted <- melt(summary_dt, measure.vars = patterns("sleep_fraction_"),
+                          variable.name = "phase", value.name = "sleep_fraction")
+summary_dt_melted = subset(summary_dt_melted, food == "met_0mM" | food == "met_0.1mM")
+
+ggplot(summary_dt_melted, aes(x=condition, y=sleep_fraction, fill=condition)) + 
+  geom_boxplot(outlier.colour = NA) +
+  #geom_jitter(alpha=.1) +
+  theme_classic()+ theme(
+                         axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+                         text = element_text(size=15),
+        axis.text.y = element_text(colour="#231F20"))+
+  facet_grid(.~phase)+ xlab("")+
+  scale_y_continuous(name= "Time sleeping (%)",labels = scales::percent)
+ggsave("fig/5days_sleep_graph.pdf", width = 8, height = 3)
+```
+
+```{r}
+summary_dt_melted_a = subset(summary_dt_melted, phase == "sleep_fraction_all")
+summary_dt_melted_l = subset(summary_dt_melted, phase == "sleep_fraction_l")
+summary_dt_melted_d = subset(summary_dt_melted, phase == "sleep_fraction_d")
+
+print("All phases")
+pairwise.wilcox.test(summary_dt_melted_a$sleep_fraction, summary_dt_melted_a$condition, p.adj = "none")
+
+print("Light phases")
+pairwise.wilcox.test(summary_dt_melted_l$sleep_fraction, summary_dt_melted_l$condition, p.adj = "none")
+
+print("Dark phases")
+pairwise.wilcox.test(summary_dt_melted_d$sleep_fraction, summary_dt_melted_d$condition, p.adj = "none")
+```
+
+
+```{r}
+ggetho(dt_curated_first5d, aes(y=asleep, colour=condition)
+       ) +
+      stat_pop_etho() +
+      stat_ld_annotations() +
+      scale_y_continuous(name= "Fraction of time sleeping",labels = scales::percent) +
+  theme_classic()
+```
+
+```{r}
+library(dplyr)
+sleep_pheno <- data.frame(phenotype = summary_dt_cur$condition)
+sleep_pheno %>% 
+  group_by(phenotype) %>%
+  summarise(no_rows = length(phenotype))
+```
+
+```{r}
+lifespan_pheno <- data.frame(condition = lifespan_dt_merged$condition)
+lifespan_pheno %>% 
+  group_by(condition) %>%
+  summarise(no_rows = length(condition))
+```
+

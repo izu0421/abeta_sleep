@@ -1,0 +1,302 @@
+---
+title: "Analysis of sleep in AD patients"
+author: "Yizhou Yu"
+date: "updated: <i>`r format( Sys.Date(), '%b-%d-%Y')`</i></h4>"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load packages
+```{r}
+library(ggplot2)
+```
+
+
+Plot using yytools: https://github.com/izu0421/yytools/blob/main/R/yy_plt_forest_lm.R
+
+```{r}
+yy_plt_forest_binom = function(binom_model){
+  coef_mat = as.data.frame(summary(lm_model)$coefficients)
+  coef_mat = na.omit(coef_mat)
+  conf = na.omit(confint.default(lm_model, level = 0.95))
+  coef_mat$lci = conf[,1]
+  coef_mat$uci = conf[,2]
+  coef_mat$label = row.names(coef_mat)
+  coef_mat = subset(coef_mat, label != "(Intercept)")
+  
+  ggplot(data=coef_mat, aes(x=label,y=exp(Estimate), fill = `Pr(>|z|)` < 0.05), color = `Pr(>|z|)` < 0.05) +
+    geom_errorbar(aes(ymin=exp(lci), ymax=exp(uci)),
+                  width=0,                    # Width of the error bars
+                  position=position_dodge(.9), color = "grey", size = 1.5) +
+    geom_point(shape=21, size = 2.5)+
+    geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=1 after flip
+    coord_flip() +  # flip coordinates (puts labels on y axis)
+    xlab("") + ylab("Odds ratio (95% confidence intervals)") +
+    scale_fill_manual(values = c("#ED2024","#939598"))+
+    scale_color_manual(values = c("#ED2024","#939598"))+
+    theme_classic()+
+    theme(axis.text.x=element_text(colour="black"),
+          axis.text.y=element_text(colour="black"))
+}
+
+yy_plt_forest_lm = function(lm_model){
+  coef_mat = as.data.frame(summary(lm_model)$coefficients)
+  coef_mat = na.omit(coef_mat)
+  conf = na.omit(confint.default(lm_model, level = 0.95))
+  coef_mat$lci = conf[,1]
+  coef_mat$uci = conf[,2]
+  coef_mat$label = row.names(coef_mat)
+  coef_mat = subset(coef_mat, label != "(Intercept)")
+  ggplot(data=coef_mat, aes(x=label,y=Estimate, fill = `Pr(>|t|)` < 0.05), color = `Pr(>|z|)` < 0.05) +
+    geom_errorbar(aes(ymin=lci, ymax=uci),
+                  width=0,                    # Width of the error bars
+                  position=position_dodge(.9), color = "grey", size = 1.5) +
+    geom_point(shape=21, size = 2.5)+
+    #geom_pointrange(aes(fill = `Pr(>|t|)` < 0.05)) +
+    geom_hline(yintercept=0, lty=2) +  # add a dotted line at x=1 after flip
+    coord_flip() +  # flip coordinates (puts labels on y axis)
+    xlab("") + ylab("Effect (95% confidence intervals)") +
+    scale_fill_manual(values = c("#ED2024","#939598"))+
+    scale_color_manual(values = c("#ED2024","#939598"))+
+    theme_classic()+
+    theme(axis.text.x=element_text(colour="black"),
+          axis.text.y=element_text(colour="black"))
+}
+```
+
+# Mendelian randomisation
+
+## Load data
+```{r}
+library(TwoSampleMR)
+ao <- available_outcomes()
+exposure_dat <- extract_instruments(c('ieu-b-2'))
+exposure_dat <- clump_data(exposure_dat)
+outcome_dat <- extract_outcome_data(exposure_dat$SNP, c('ukb-a-9'), proxies = 1, rsq = 0.8, align_alleles = 1, palindromes = 1, maf_threshold = 0.3)
+dat <- harmonise_data(exposure_dat, outcome_dat, action = 2)
+mr_results <- mr(dat)
+```
+
+## MR analysis of the causal effect of AD on sleep
+```{r}
+mr_results[,c("method","nsnp","b","pval")]
+```
+
+exponentiate = Convert effects to OR
+
+```{r}
+scatter = mr_scatter_plot(mr_results, dat) 
+ggsave(scatter[[1]], file="fig/mr_scatter_plot_snp.pdf", width=7, height=7)
+```
+
+```{r}
+forest = mr_forest_plot(mr_singlesnp(dat))
+ggsave(forest[[1]], file="fig/mr_forest_plot_snp.pdf", width=7, height=7)
+```
+
+Directionality test 
+
+[Hemani G, Tilling K, Davey Smith G.<br/>
+**Orienting the causal relationship between imprecisely measured traits using GWAS summary data.**<br/>
+PLoS Genetics. 2017. 13(11).](http://journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1007081)
+
+```{r}
+knitr::kable(directionality_test(dat))
+```
+
+
+
+```{r}
+generate_odds_ratios(mr_results)
+```
+
+
+It calculates the variance explained in the exposure and the outcome by the instrumenting SNPs, and tests if the variance in the outcome is less than the exposure.
+
+This test is, like many others, liable to give inaccurate causal directions under some measurement error parameters in the exposure and the outcome (e.g. if the outcome has much lower measurement precision then its proportion of variance explained will be underestimated). Sensitivity can be applied to evaluate the extent to which the inferred causal direction is liable to measurement error, in two ways. 
+
+1. Provide estimates of measurement error for the exposure and the outcome, and obtain an adjusted estimate of the causal direction
+2. For all possible values of measurement error, identify the proportion of the parameter space which supports the inferred causal direction
+
+```{r}
+
+ggplot(data=generate_odds_ratios(mr_results), aes(x=reorder(method,-or),y=or, fill = pval < 0.05), color = pval < 0.05) +
+    geom_errorbar(aes(ymin=exp(lo_ci), ymax=exp(up_ci)),
+                  width=0,                    # Width of the error bars
+                  position=position_dodge(.9), color = "grey", size = 1.5) +
+    geom_point(shape=21, size = 2.5)+
+    geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=1 after flip
+    coord_flip() +  # flip coordinates (puts labels on y axis)
+    xlab("") + ylab("Odds ratio (95% confidence intervals)") +
+    scale_fill_manual(values = c("#ED2024","#939598"))+
+    scale_color_manual(values = c("#ED2024","#939598"))+
+    theme_classic()+
+    theme(axis.text.x=element_text(colour="black"),
+          axis.text.y=element_text(colour="black"))
+
+ggsave("fig/mr_forest_plot_byMethod.pdf", height = 3, width = 5)
+```
+
+
+```{r}
+write.csv(generate_odds_ratios(mr_results),"dt_out/odds_ratio_mr_results.csv", row.names = F)
+```
+
+
+# UKB Analysis 
+
+```{r}
+ukb_pheno_ad_prs = read.csv("dt/ukb_pheno_FA_ad_prs.csv")
+```
+
+## Descriptive stats
+```{r}
+library(arsenal)
+ukb_descript_stats <- tableby(ad_diag ~ ., data = ukb_pheno_ad_prs[,2:ncol(ukb_pheno_ad_prs)])
+write2word(ukb_descript_stats, "ukb_descriptStats.doc",
+  keep.md = TRUE,
+  quiet = TRUE, # passed to rmarkdown::render
+  title = "Descriptive statistics of the UK Biobank subcohort analysed") # passed to summary.tableby
+```
+
+
+## Association between AD polygenic risk score and sleep 
+
+### General plot 
+
+gam' and formula 'y ~ s(x, bs = "cs")
+
+```{r}
+ggplot(ukb_pheno_ad_prs,aes(x=age,y=sleep_dur, color = ad_diag, fill = ad_diag)) + 
+  #geom_point() + 
+  geom_smooth(method = "gam") +
+  scale_color_manual(values=c("#939598", "#ED2024")) + 
+  scale_fill_manual(values=c("#939598", "#ED2024")) + 
+  theme_classic()
+
+ggsave("fig/AD_diagnosis_age_PRS_sleep_duration.pdf",width = 4,height= 2)
+```
+
+
+```{r}
+summary_prs = summary(ukb_pheno_ad_prs$ad_prs)
+
+ukb_pheno_ad_prs$prs_cat = ifelse(ukb_pheno_ad_prs$ad_prs < summary_prs["1st Qu."],
+                                  "Low", ifelse(ukb_pheno_ad_prs$ad_prs > summary_prs["3rd Qu."], "High", NA))
+
+```
+
+```{r}
+ukb_pheno_ad_prs_noAD = subset(ukb_pheno_ad_prs, ad_diag == FALSE)
+ukb_pheno_ad_prs_na = na.omit(ukb_pheno_ad_prs_noAD[,c("age","sleep_dur","prs_cat")])
+ggplot(ukb_pheno_ad_prs_na,aes(x=age,y=sleep_dur, color = prs_cat, fill = prs_cat)) + 
+  #geom_point() + 
+  geom_smooth(method = "gam") +
+  #geom_smooth(method = "lm", formula = y ~ poly(x, 5), se = FALSE)
+  scale_color_manual(values=c("#ED2024","#939598")) + 
+  scale_fill_manual(values=c("#ED2024","#939598")) + 
+  theme_classic()
+ggsave("fig/scaled_AD_PRS_age_sleep_duration.pdf",width = 4,height= 2)
+```
+
+```{r}
+ggplot(ukb_pheno_ad_prs,aes(x=scale(ad_prs),y=sleep_dur)) + 
+  #geom_point() + 
+  geom_smooth(method = "gam", color = "#ED2024", fill = "#ED2024") +
+  #geom_smooth(method = "lm", formula = y ~ poly(x, 5), se = FALSE)
+  #scale_color_manual(values=c("#ED2024","#939598")) + 
+  theme_classic()
+
+ggsave("fig/scaled_AD_PRS_sleep_duration.pdf",width = 4,height= 2)
+```
+
+```{r}
+ggplot(ukb_pheno_ad_prs,aes(x=scale(ad_prs),y=sleep_dur, color = ad_diag, fill = ad_diag)) + 
+  #geom_point() + 
+  geom_smooth(method = "gam") +
+  #geom_smooth(method = "lm", formula = y ~ poly(x, 5), se = FALSE)
+  #scale_color_manual(values=c("#ED2024","#939598")) + 
+  theme_classic()
+```
+
+### AD PRS vs night sleep 
+
+polygenic risk score associated with decreased sleep
+```{r}
+
+ad_prs_sleep = lm(sleep_dur~age + townsend + sex + uni + nodegree + VitaD_protein +
+                    ad_prs, data = ukb_pheno_ad_prs)
+summary(ad_prs_sleep)
+```
+
+```{r}
+yy_plt_forest_lm(ad_prs_sleep)
+ggsave("fig/AD_PRS_on_sleepDuration.pdf", width = 6, height = 3)
+```
+
+### AD PRS vs day sleep 
+
+PRS assocation with sleep during the day 
+```{r}
+ad_prs_daysleep = lm(daysleep_sim~age + townsend + sex + uni + nodegree + VitaD_protein +
+                ad_prs, data = ukb_pheno_ad_prs)
+summary(ad_prs_daysleep)
+```
+
+```{r}
+yy_plt_forest_lm(ad_prs_daysleep)
+ggsave("fig/AD_PRS_on_daySleep.pdf", width = 6, height = 3)
+```
+
+
+## Association between AD diagnosis and sleep 
+
+### AD diagnosis vs night sleep 
+
+AD risk associated with more sleep
+```{r}
+ad_sleep = lm(sleep_dur~age + townsend + sex + uni + nodegree + VitaD_protein +
+                ad_diag, data = ukb_pheno_ad_prs)
+summary(ad_sleep)
+```
+```{r}
+yy_plt_forest_lm(ad_sleep)
+ggsave("fig/AD_diagnosis_on_sleepDuration.pdf", width = 6, height = 3)
+```
+
+### AD diagnosis vs day sleep 
+
+
+```{r}
+ad_daysleep = lm(daysleep_sim~age + townsend + sex + uni + nodegree + VitaD_protein +
+                ad_diag, data = ukb_pheno_ad_prs)
+summary(ad_daysleep)
+```
+```{r}
+yy_plt_forest_lm(ad_daysleep)
+ggsave("fig/AD_diagnosis_on_daySleep.pdf", width = 6, height = 3)
+```
+
+
+## Additional analysis on napping 
+
+```{r}
+ad_nap = lm(nap_sim~age + townsend + sex + uni + nodegree + VitaD_protein +
+                ad_diag, data = ukb_pheno_ad_prs)
+summary(ad_nap)
+```
+
+```{r}
+ad_prs_nap = lm(nap_sim~age + townsend + sex + uni + nodegree + VitaD_protein +
+                ad_prs, data = ukb_pheno_ad_prs)
+summary(ad_prs_nap)
+```
+
+
+
+
+
+

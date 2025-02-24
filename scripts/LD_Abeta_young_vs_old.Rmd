@@ -1,0 +1,194 @@
+---
+title: "Analysis of Abeta-expressing Drosophila in LD, Young (3dae) vs old (25 dae)"
+author: "Yizhou Yu"
+date: "updated: <i>`r format( Sys.Date(), '%b-%d-%Y')`</i></h4>"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Load libraries
+```{r}
+library("behavr")
+library("damr")
+library("ggetho")
+library(sleepr)
+library(survival)
+library(survminer)
+```
+
+Load data into a behavr structure, simultaneously applying the sleep_dam_annotation function
+
+```{r}
+DATA_DIR <- "dt/"
+list.files(DATA_DIR, pattern= "*.txt")
+metadata <- fread("metadt.csv")
+metadata = na.omit(metadata)
+
+# This part accounts for time-zone differences
+#start_datetime = as.POSIXlt(metadata$start_datetime, tz = "",
+#           tryFormats = c("%Y-%m-%d %H:%M:%OS",
+#                          "%Y/%m/%d %H:%M:%OS", 
+#                          "%D/%M/%d %H:%M"))
+
+#metadata$start_datetime = start_datetime
+
+#format of the datetime
+#metadata$stop_datetime = "2021-11-14 08:00:00"
+
+#Check date format: "2020-07-07 08:00:00"
+metadata$condition = paste0(metadata$phenotype, metadata$age)
+metadata <- link_dam_metadata(metadata, result_dir = DATA_DIR)
+dt <- load_dam(metadata, FUN = sleepr::sleep_dam_annotation)
+
+#curate dead flies -- this is a big function
+#default = 1 day inactivity --> dead 
+
+dt_curated <- curate_dead_animals(dt)
+summary(dt_curated)
+```
+
+
+## Lifespan
+```{r}
+# we make a summary table of all lifespan for each animals
+lifespan_dt <- dt_curated[, .(lifespan = max(t)), by=id]
+
+lifespan_dt_merged = merge(metadata, lifespan_dt, by = "id")
+lifespan_dt_km = lifespan_dt_merged
+lifespan_dt_km$total_assay_time = as.numeric(as.POSIXct(lifespan_dt_km$stop_datetime,format='%Y-%m-%d %H:%M:%S') - as.POSIXct(lifespan_dt_km$start_datetime,format='%Y-%m-%d %H:%M:%S'))
+lifespan_dt_km$death = NA
+
+for (row in 1:nrow(lifespan_dt_km)){
+  if ((lifespan_dt_km$lifespan[row])/86400 >= lifespan_dt_km$total_assay_time[row]) {
+    lifespan_dt_km$death[row] = 0
+  }
+  else {
+    lifespan_dt_km$death[row] = 1
+  }
+}
+```
+
+```{r}
+km_fit = survfit(Surv(lifespan/86400, death) ~ condition, data = lifespan_dt_km)
+
+ggsurv = ggsurvplot(
+    fit = km_fit, 
+    xlab = "Days (from 10dae)", 
+    ylab = "Survival (%)",
+    conf.int = F,
+    pval = F,
+    #pval.method = TRUE,
+    log.rank.weights = "1")
+ggsurv$plot + scale_y_continuous(labels = scales::percent)
+
+ggsave("fig/KM_lifespan_graph.pdf", width = 5, height = 3)
+```
+
+```{r}
+pairwise_survdiff_results = pairwise_survdiff(Surv(lifespan/86400, death) ~ condition, data = lifespan_dt_km, p.adjust.method = "BH")
+
+pairwise_survdiff_results
+
+symnum(pairwise_survdiff_results$p.value, cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 0.1, 1),
+   symbols = c("****", "***", "**", "*", "+", " "),
+   abbr.colnames = FALSE, na = "")
+
+```
+
+
+## Sleep
+
+```{r}
+dt_curated = dt_curated[, phase := ifelse(t %% hours(24) < hours(12), "L", "D")]
+```
+
+
+### first 5 days
+-> use only data from the first 5 days
+
+```{r}
+dt_curated_first5d = subset(dt_curated, t <= days(5)) 
+
+ggetho(dt_curated_first5d, aes(y=asleep, colour=condition)
+       , time_wrap = hours(24)
+       ) +
+      stat_pop_etho() +
+      stat_ld_annotations() +
+  facet_grid(age ~ .)+
+      scale_y_continuous(name= "Time asleep (%)",labels = scales::percent) +
+  theme_classic()
+```
+
+Interesting phenotypes:
+- young: insomnia + waking up earlier 
+- old: increased sleep during day and lack of morning anticipation
+
+```{r}
+summary_dt_5days <- 
+  rejoin(dt_curated_first5d[,
+           .(
+             # this is where the computation happens
+             sleep_fraction_all = mean(asleep),
+             sleep_fraction_l = mean(asleep[phase == "L"]),
+             sleep_fraction_d = mean(asleep[phase == "D"])
+             ),
+           ,by=id])
+summary_dt_5days = merge(summary_dt_5days, lifespan_dt, by = "id")
+summary_dt_5days = subset(summary_dt_5days, lifespan >= days(2))
+
+summary_dt_5days <- melt(summary_dt_5days, measure.vars = patterns("sleep_fraction_"),
+                          variable.name = "phase", value.name = "sleep_fraction")
+
+ggplot(summary_dt_5days, aes(x=phenotype, y=sleep_fraction*100, fill=phenotype)) + 
+  geom_boxplot() +
+  #geom_jitter(alpha=.1, size = 5) +
+  theme_classic()+ theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+                         text = element_text(size=15),
+        axis.text = element_text(colour="#231F20"))+
+  facet_grid(age~phase)+ 
+  xlab("")+
+  scale_y_continuous(name= "Time sleeping (%)")
+ggsave("fig/5days_sleep_graph.pdf", width = 5, height = 3)
+```
+
+quantification 
+```{r}
+summary_dt_melted_a = subset(summary_dt_5days, phase == "sleep_fraction_all")
+summary_dt_melted_l = subset(summary_dt_5days, phase == "sleep_fraction_l")
+summary_dt_melted_d = subset(summary_dt_5days, phase == "sleep_fraction_d")
+
+print("All phases")
+pairwise.wilcox.test(summary_dt_melted_a$sleep_fraction, summary_dt_melted_a$condition, p.adj = "none")
+
+print("Light phases")
+pairwise.wilcox.test(summary_dt_melted_l$sleep_fraction, summary_dt_melted_l$condition, p.adj = "none")
+
+print("Dark phases")
+pairwise.wilcox.test(summary_dt_melted_d$sleep_fraction, summary_dt_melted_d$condition, p.adj = "none")
+```
+
+Sleep
+```{r}
+library(dplyr)
+sleep_pheno <- data.frame(phenotype = summary_dt_melted_a$condition)
+sleep_pheno %>% 
+  group_by(phenotype) %>%
+  summarise(no_rows = length(phenotype))
+```
+
+Lifespan
+```{r}
+lifespan_pheno <- data.frame(condition = lifespan_dt_merged$condition)
+lifespan_pheno %>% 
+  group_by(condition) %>%
+  summarise(no_rows = length(condition))
+```
+
+could add 0.1 mg/ml of THIP, as determined here: https://www.sciencedirect.com/science/article/pii/S0960982215003425?via%3Dihub#bib36
+
